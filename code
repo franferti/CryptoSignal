@@ -1,0 +1,128 @@
+from kivy.app import App
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.screenmanager import ScreenManager, Screen
+from kivy.uix.button import Button
+from kivy.uix.image import Image
+from kivy.graphics.texture import Texture
+from datetime import datetime, timedelta
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.dates import DateFormatter
+import io
+
+class CryptoApp(App):
+    def build(self):
+        # Layout principal (vertical)
+        self.sm = ScreenManager() #Creamos un administrador de pantallas.
+
+        self.main_screen = MainScreen(name='main')#Creamos la pantalla principal con botones.
+        self.sm.add_widget(self.main_screen)# Añadimos ambas pantallas al ScreenManager.
+        
+        self.chart_screen = ChartScreen(name='chart')#Creamos la pantalla donde aparecerá la gráfica.
+        self.sm.add_widget(self.chart_screen)
+
+        return self.sm
+
+class MainScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        layout = BoxLayout(orientation='vertical', spacing=10, padding=10)
+
+        buttons = [
+            ("BTC", "BTC-USD", 50, 200),
+            ("ADA", "ADA-USD", 9, 50),
+            ("ETH", "ETH-USD", 20, 100),
+            ("SOL", "SOL-USD", 10, 55)
+        ]
+
+        for text, symbol, sma_9, sma_30 in buttons:
+            button = Button(text=text, size_hint=(1,0.2))
+            button.bind(on_press=lambda instance, s=symbol, sma_9=sma_9, sma_30=sma_30:App.get_running_app().sm.get_screen('chart').open_chart(instance, s, sma_9, sma_30))
+            layout.add_widget(button)
+
+        self.add_widget(layout)
+
+class ChartScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.layout = BoxLayout(orientation='vertical', spacing=10, padding=10)
+
+        self.back_button = Button(text='Volver', size_hint=(1,0.2))
+        self.back_button.bind(on_press=self.go_back)
+        self.layout.add_widget(self.back_button)
+
+        self.img = Image()
+        self.layout.add_widget(self.img)
+
+        self.add_widget(self.layout)
+
+    def go_back(self, instance):
+        app = App.get_running_app()
+        app.sm.current = 'main'
+
+    def generate_chart(self, symbol, sma_9, sma_30, title):
+        start_date = (datetime.today() - timedelta(days=182)).strftime('%Y-%m-%d')
+        end_date = datetime.today().strftime('%Y-%m-%d')
+        # Descargar los datos de criptomonedas
+        data = yf.download(symbol, start=start_date, end=end_date, interval='1d')
+
+
+        data['SMA_9'] = data['Close'].rolling(window=sma_9, min_periods=1).mean()
+        data['SMA_30'] = data['Close'].rolling(window=sma_30, min_periods=1).mean()
+
+
+        trade_signals = pd.DataFrame(index=data.index)
+        trade_signals['Short'] = data['SMA_9']
+        trade_signals['Long'] = data['SMA_30']
+        trade_signals['Signal'] = 0.0
+        trade_signals['Buy_Signal'] = (trade_signals['Short'].shift(1) < trade_signals['Long'].shift(1)) & (trade_signals['Short'] > trade_signals['Long'])
+        trade_signals['Sell_Signal'] = (trade_signals['Short'].shift(1) > trade_signals['Long'].shift(1)) & (trade_signals['Short'] < trade_signals['Long'])
+        trade_signals['Position'] = trade_signals['Signal'].diff()
+        fig, ax = plt.subplots(dpi=150)
+        ax.plot(trade_signals['Short'], lw=0.75, alpha=0.75, color='orange')
+        ax.plot(trade_signals['Long'], lw=0.75, alpha=0.75, color='purple')
+        ax.plot(trade_signals.index[trade_signals['Buy_Signal']],trade_signals['Short'][trade_signals['Buy_Signal']],marker='^', color='green', linestyle='none', label="Compra")        
+        ax.plot(trade_signals.index[trade_signals['Sell_Signal']],trade_signals['Short'][trade_signals['Sell_Signal']],marker='v', color='red', linestyle='none', label="Venta")        
+        ax.plot(data['Close'], lw=0.75, label='Precio de Cierre')
+        ax.plot(data['SMA_9'], lw=0.75, alpha=0.75, label=f'SMA {sma_9} días', color='orange')
+        ax.plot(data['SMA_30'], lw=0.75, alpha=0.75, label=f'SMA {sma_30} días', color='purple')
+
+        # Formato de fechas
+        date_format = DateFormatter("%m-%d-%y")
+        ax.xaxis.set_major_formatter(date_format)
+        ax.tick_params(axis='x', labelsize=8)
+        fig.autofmt_xdate()
+
+        ax.set_ylabel('Precio (USD)')
+        ax.set_title(title)
+        ax.legend()
+        ax.grid()
+
+
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png")
+        plt.close(fig)
+        buf.seek(0)
+
+
+        from PIL import Image as PILImage
+        pil_image = PILImage.open(buf).convert("RGBA")
+        tex_size = pil_image.size  # Obtener el tamaño real de la imagen
+
+
+        texture = Texture.create(size=tex_size, colorfmt="rgba")
+        texture.blit_buffer(pil_image.tobytes(), colorfmt="rgba", bufferfmt="ubyte")
+        texture.flip_vertical()  # Asegura que la imagen no se invierta
+
+        self.img.texture = texture
+
+    def open_chart(self, instance, symbol, sma_9, sma_30):
+        app = App.get_running_app()
+        chart_screen = app.sm.get_screen('chart')
+        chart_screen.generate_chart(symbol, sma_9, sma_30, f'Precio de {symbol}')
+        app.sm.current='chart'   
+        
+if __name__ == "__main__":
+    CryptoApp().run()
